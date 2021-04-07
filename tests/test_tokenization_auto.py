@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Google AI Language Team Authors.
+# Copyright 2020 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 # limitations under the License.
 
 
-import logging
 import unittest
 
 from transformers import (
@@ -22,51 +21,101 @@ from transformers import (
     GPT2_PRETRAINED_CONFIG_ARCHIVE_MAP,
     AutoTokenizer,
     BertTokenizer,
+    BertTokenizerFast,
     GPT2Tokenizer,
+    GPT2TokenizerFast,
     RobertaTokenizer,
+    RobertaTokenizerFast,
 )
-
-from .utils import DUMMY_UNKWOWN_IDENTIFIER, SMALL_MODEL_IDENTIFIER, slow  # noqa: F401
+from transformers.models.auto.configuration_auto import AutoConfig
+from transformers.models.auto.tokenization_auto import TOKENIZER_MAPPING
+from transformers.models.roberta.configuration_roberta import RobertaConfig
+from transformers.testing_utils import (
+    DUMMY_DIFF_TOKENIZER_IDENTIFIER,
+    DUMMY_UNKWOWN_IDENTIFIER,
+    SMALL_MODEL_IDENTIFIER,
+    require_tokenizers,
+    slow,
+)
 
 
 class AutoTokenizerTest(unittest.TestCase):
-    # @slow
+    @slow
     def test_tokenizer_from_pretrained(self):
-        logging.basicConfig(level=logging.INFO)
         for model_name in (x for x in BERT_PRETRAINED_CONFIG_ARCHIVE_MAP.keys() if "japanese" not in x):
             tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.assertIsNotNone(tokenizer)
-            self.assertIsInstance(tokenizer, BertTokenizer)
+            self.assertIsInstance(tokenizer, (BertTokenizer, BertTokenizerFast))
             self.assertGreater(len(tokenizer), 0)
 
         for model_name in GPT2_PRETRAINED_CONFIG_ARCHIVE_MAP.keys():
             tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.assertIsNotNone(tokenizer)
-            self.assertIsInstance(tokenizer, GPT2Tokenizer)
+            self.assertIsInstance(tokenizer, (GPT2Tokenizer, GPT2TokenizerFast))
             self.assertGreater(len(tokenizer), 0)
 
     def test_tokenizer_from_pretrained_identifier(self):
-        logging.basicConfig(level=logging.INFO)
         tokenizer = AutoTokenizer.from_pretrained(SMALL_MODEL_IDENTIFIER)
-        self.assertIsInstance(tokenizer, BertTokenizer)
-        self.assertEqual(len(tokenizer), 12)
+        self.assertIsInstance(tokenizer, (BertTokenizer, BertTokenizerFast))
+        self.assertEqual(tokenizer.vocab_size, 12)
 
     def test_tokenizer_from_model_type(self):
-        logging.basicConfig(level=logging.INFO)
         tokenizer = AutoTokenizer.from_pretrained(DUMMY_UNKWOWN_IDENTIFIER)
-        self.assertIsInstance(tokenizer, RobertaTokenizer)
-        self.assertEqual(len(tokenizer), 20)
+        self.assertIsInstance(tokenizer, (RobertaTokenizer, RobertaTokenizerFast))
+        self.assertEqual(tokenizer.vocab_size, 20)
 
+    def test_tokenizer_from_tokenizer_class(self):
+        config = AutoConfig.from_pretrained(DUMMY_DIFF_TOKENIZER_IDENTIFIER)
+        self.assertIsInstance(config, RobertaConfig)
+        # Check that tokenizer_type ≠ model_type
+        tokenizer = AutoTokenizer.from_pretrained(DUMMY_DIFF_TOKENIZER_IDENTIFIER, config=config)
+        self.assertIsInstance(tokenizer, (BertTokenizer, BertTokenizerFast))
+        self.assertEqual(tokenizer.vocab_size, 12)
+
+    @require_tokenizers
     def test_tokenizer_identifier_with_correct_config(self):
-        logging.basicConfig(level=logging.INFO)
-        for tokenizer_class in [BertTokenizer, AutoTokenizer]:
+        for tokenizer_class in [BertTokenizer, BertTokenizerFast, AutoTokenizer]:
             tokenizer = tokenizer_class.from_pretrained("wietsedv/bert-base-dutch-cased")
-            self.assertIsInstance(tokenizer, BertTokenizer)
-            self.assertEqual(tokenizer.basic_tokenizer.do_lower_case, False)
-            self.assertEqual(tokenizer.max_len, 512)
+            self.assertIsInstance(tokenizer, (BertTokenizer, BertTokenizerFast))
 
+            if isinstance(tokenizer, BertTokenizer):
+                self.assertEqual(tokenizer.basic_tokenizer.do_lower_case, False)
+            else:
+                self.assertEqual(tokenizer.do_lower_case, False)
+
+            self.assertEqual(tokenizer.model_max_length, 512)
+
+    @require_tokenizers
     def test_tokenizer_identifier_non_existent(self):
-        logging.basicConfig(level=logging.INFO)
-        for tokenizer_class in [BertTokenizer, AutoTokenizer]:
+        for tokenizer_class in [BertTokenizer, BertTokenizerFast, AutoTokenizer]:
             with self.assertRaises(EnvironmentError):
                 _ = tokenizer_class.from_pretrained("julien-c/herlolip-not-exists")
+
+    def test_parents_and_children_in_mappings(self):
+        # Test that the children are placed before the parents in the mappings, as the `instanceof` will be triggered
+        # by the parents and will return the wrong configuration type when using auto models
+
+        mappings = (TOKENIZER_MAPPING,)
+
+        for mapping in mappings:
+            mapping = tuple(mapping.items())
+            for index, (child_config, _) in enumerate(mapping[1:]):
+                for parent_config, _ in mapping[: index + 1]:
+                    with self.subTest(msg=f"Testing if {child_config.__name__} is child of {parent_config.__name__}"):
+                        self.assertFalse(issubclass(child_config, parent_config))
+
+    @require_tokenizers
+    def test_from_pretrained_use_fast_toggle(self):
+        self.assertIsInstance(AutoTokenizer.from_pretrained("bert-base-cased", use_fast=False), BertTokenizer)
+        self.assertIsInstance(AutoTokenizer.from_pretrained("bert-base-cased"), BertTokenizerFast)
+
+    @require_tokenizers
+    def test_do_lower_case(self):
+        tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased", do_lower_case=False)
+        sample = "Hello, world. How are you?"
+        tokens = tokenizer.tokenize(sample)
+        self.assertEqual("[UNK]", tokens[0])
+
+        tokenizer = AutoTokenizer.from_pretrained("microsoft/mpnet-base", do_lower_case=False)
+        tokens = tokenizer.tokenize(sample)
+        self.assertEqual("[UNK]", tokens[0])
